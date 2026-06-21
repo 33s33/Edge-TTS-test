@@ -6,6 +6,51 @@ import tempfile
 import os
 import subprocess
 from typing import List
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import subprocess
+import uuid
+import os
+
+app = FastAPI()
+
+class BedRequest(BaseModel):
+    file: str = "concrete_bunker_10m.mp3"
+    start: float = 0
+    duration: float = 5
+    volume: float = 1.0
+    name: str | None = None
+
+@app.post("/bed")
+def make_bed(req: BedRequest):
+    input_path = os.path.join("assets", req.file)
+
+    if not os.path.exists(input_path):
+        return {"error": f"File not found: {input_path}"}
+
+    output_name = req.name or f"bed_{uuid.uuid4().hex}.mp3"
+    output_path = f"/tmp/{output_name}"
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(req.start),
+        "-i", input_path,
+        "-t", str(req.duration),
+        "-filter:a", f"volume={req.volume}",
+        "-c:a", "libmp3lame",
+        "-q:a", "2",
+        output_path
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    return FileResponse(
+        output_path,
+        media_type="audio/mpeg",
+        filename=output_name
+    )
 
 app = FastAPI()
 
