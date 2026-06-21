@@ -193,7 +193,7 @@ async def make_bed(req: BedRequest):
     if not os.path.exists(input_path):
         raise HTTPException(status_code=404, detail=f"File not found: {input_path}")
 
-    duration = max(0.1, min(req.duration, 60))
+    duration = max(0.1, min(req.duration, 3600))
     start = max(0, req.start)
     volume = max(0.0, min(req.volume, 2.0))
 
