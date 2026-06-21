@@ -62,6 +62,58 @@ async def tts_segment(req: TTSSegmentRequest):
         "path": path
     }
 
+@app.post("/silence-segment")
+async def silence_segment(req: SilenceSegmentRequest):
+    duration = max(0.1, min(req.duration_sec, 60))
+    path = os.path.join(SEGMENT_DIR, req.filename)
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "lavfi",
+        "-i", "anullsrc=r=44100:cl=mono",
+        "-t", str(duration),
+        path
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    return {
+        "index": req.index,
+        "type": "silence",
+        "filename": req.filename,
+        "path": path
+    }
+
+@app.post("/concat")
+async def concat(req: ConcatRequest):
+    list_path = os.path.join(SEGMENT_DIR, "concat_list.txt")
+    output_path = os.path.join(SEGMENT_DIR, "episode.mp3")
+
+    with open(list_path, "w", encoding="utf-8") as f:
+        for filename in req.files:
+            safe_path = os.path.join(SEGMENT_DIR, filename)
+            f.write(f"file '{safe_path}'\n")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_path,
+        "-c", "copy",
+        output_path
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    return FileResponse(
+        output_path,
+        media_type="audio/mpeg",
+        filename="episode.mp3"
+    )
+
+
 @app.post("/silence")
 async def silence(req: SilenceRequest):
     duration = max(0.1, min(req.duration_sec, 60))
