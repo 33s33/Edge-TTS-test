@@ -41,8 +41,13 @@ os.makedirs(SEGMENT_DIR, exist_ok=True)
 @app.get("/")
 def health():
     return {"status": "ok"}
-
+    
+@app.get("/segment/{filename}")
+async def get_segment(filename: str):
+    path = os.path.join(SEGMENT_DIR, filename)
+    return FileResponse(path, media_type="audio/mpeg", filename=filename)
 @app.post("/tts-segment")
+
 async def tts_segment(req: TTSSegmentRequest):
     path = os.path.join(SEGMENT_DIR, req.filename)
 
@@ -67,14 +72,17 @@ async def silence_segment(req: SilenceSegmentRequest):
     duration = max(0.1, min(req.duration_sec, 60))
     path = os.path.join(SEGMENT_DIR, req.filename)
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f", "lavfi",
-        "-i", "anullsrc=r=44100:cl=mono",
-        "-t", str(duration),
-        path
-    ]
+  cmd = [
+    "ffmpeg",
+    "-y",
+    "-f", "concat",
+    "-safe", "0",
+    "-i", list_path,
+    "-ac", "1",
+    "-ar", "44100",
+    "-b:a", "128k",
+    output_path
+]
 
     subprocess.run(cmd, check=True)
 
