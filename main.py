@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 import edge_tts
@@ -12,12 +12,7 @@ app = FastAPI()
 SEGMENT_DIR = "/tmp/radio_segments"
 os.makedirs(SEGMENT_DIR, exist_ok=True)
 
-class AmbienceSegmentRequest(BaseModel):
-    index: int
-    duration_sec: float = 10
-    filename: str
-    sound: str = "radio_static"
-    
+
 class TTSRequest(BaseModel):
     text: str
     voice: str = "ru-RU-DmitryNeural"
@@ -44,25 +39,57 @@ class SilenceSegmentRequest(BaseModel):
     filename: str
 
 
+class AmbienceSegmentRequest(BaseModel):
+    index: int
+    duration_sec: float = 10
+    filename: str
+    sound: str = "low_bed"
+
+
 class ConcatRequest(BaseModel):
     files: List[str]
 
 
 @app.get("/")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "edge-tts-audio-api"}
+
+
+@app.get("/routes")
+def routes():
+    return {
+        "routes": [
+            "/",
+            "/routes",
+            "/tts",
+            "/silence",
+            "/tts-segment",
+            "/silence-segment",
+            "/ambience-segment",
+            "/concat",
+            "/segment/{filename}",
+        ]
+    }
 
 
 @app.get("/segment/{filename}")
 async def get_segment(filename: str):
     path = os.path.join(SEGMENT_DIR, filename)
-    return FileResponse(path, media_type="audio/mpeg", filename=filename)
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Segment not found: {filename}")
+
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        filename=filename,
+    )
 
 
 @app.post("/tts")
 async def tts(req: TTSRequest):
     if not req.text or not req.text.strip():
-        return {"error": "empty text"}
+        raise HTTPException(status_code=400, detail="empty text")
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
     tmp.close()
@@ -93,9 +120,18 @@ async def silence(req: SilenceRequest):
     cmd = [
         "ffmpeg",
         "-y",
-        "-f", "lavfi",
-        "-i", "anullsrc=r=44100:cl=mono",
-        "-t", str(duration),
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=44100:cl=mono",
+        "-t",
+        str(duration),
+        "-ac",
+        "1",
+        "-ar",
+        "44100",
+        "-b:a",
+        "128k",
         tmp.name,
     ]
 
@@ -107,39 +143,124 @@ async def silence(req: SilenceRequest):
         filename="silence.mp3",
     )
 
-@app.post("/ambience-segment")
-async def ambience_segment(req: AmbienceSegmentRequest):
+
+@app.post("/tts-segment")
+async def tts_segment(req: TTSSegmentRequest):
+    if not req.text or not req.text.strip():
+        raise HTTPException(status_code=400, detail="empty text")
+
+    path = os.path.join(SEGMENT_DIR, req.filename)
+
+    communicate = edge_tts.Communicate(
+        req.text,
+        req.voice,
+        rate=req.rate,
+        pitch=req.pitch,
+    )
+
+    await communicate.save(path)
+
+    return {
+        "index": req.index,
+        "type": "speech",
+        "filename": req.filename,
+        "path": path,
+    }
+
+
+@app.post("/silence-segment")
+async def silence_segment(req: SilenceSegmentRequest):
     duration = max(0.1, min(req.duration_sec, 60))
     path = os.path.join(SEGMENT_DIR, req.filename)
 
     cmd = [
         "ffmpeg",
         "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=44100:cl=mono",
+        "-t",
+        str(duration),
+        "-ac",
+        "1",
+        "-ar",
+        "44100",
+        "-b:a",
+        "128k",
+        path,
+    ]
 
-        "-f", "lavfi",
-        "-i", "sine=frequency=55:sample_rate=44100",
+    subprocess.run(cmd, check=True)
 
-        "-f", "lavfi",
-        "-i", "sine=frequency=82:sample_rate=44100",
+    return {
+        "index": req.index,
+        "type": "silence",
+        "filename": req.filename,
+        "path": path,
+    }
 
-        "-f", "lavfi",
-        "-i", "anoisesrc=color=brown:amplitude=0.18:sample_rate=44100",
 
+@app.post("/ambience-segment")
+async def ambience_segment(req: AmbienceSegmentRequest):
+    duration = max(0.1, min(req.duration_sec, 60))
+    path = os.path.join(SEGMENT_DIR, req.filename)
+
+    sound = (req.sound or "low_bed").lower()
+
+    if "static" in sound or "radio" in sound:
+        sources = [
+            ("anoisesrc=color=white:amplitude=0.16:sample_rate=44100", "volume=0.35,highpass=f=800,lowpass=f=4200"),
+            ("anoisesrc=color=pink:amplitude=0.08:sample_rate=44100", "volume=0.20,highpass=f=200,lowpass=f=2500"),
+        ]
+    elif "storm" in sound or "wind" in sound or "rain" in sound or "ocean" in sound:
+        sources = [
+            ("anoisesrc=color=brown:amplitude=0.22:sample_rate=44100", "volume=0.55,highpass=f=40,lowpass=f=1200"),
+            ("anoisesrc=color=pink:amplitude=0.10:sample_rate=44100", "volume=0.30,highpass=f=300,lowpass=f=3000"),
+            ("sine=frequency=63:sample_rate=44100", "volume=0.12"),
+        ]
+    else:
+        sources = [
+            ("sine=frequency=55:sample_rate=44100", "volume=0.22"),
+            ("sine=frequency=82:sample_rate=44100", "volume=0.14"),
+            ("anoisesrc=color=brown:amplitude=0.18:sample_rate=44100", "volume=0.45,highpass=f=45,lowpass=f=1600"),
+        ]
+
+    cmd = ["ffmpeg", "-y"]
+
+    for source, _filter in sources:
+        cmd += ["-f", "lavfi", "-i", source]
+
+    filter_parts = []
+    labels = []
+
+    for i, (_source, audio_filter) in enumerate(sources):
+        label = f"a{i}"
+        filter_parts.append(f"[{i}:a]{audio_filter}[{label}]")
+        labels.append(f"[{label}]")
+
+    filter_complex = (
+        ";".join(filter_parts)
+        + ";"
+        + "".join(labels)
+        + f"amix=inputs={len(sources)}:duration=longest,"
+        + "tremolo=f=0.10:d=0.35,"
+        + "volume=1.6[out]"
+    )
+
+    cmd += [
         "-filter_complex",
-        (
-            "[0:a]volume=0.18[a0];"
-            "[1:a]volume=0.10[a1];"
-            "[2:a]highpass=f=45,lowpass=f=1600,volume=0.45[a2];"
-            "[a0][a1][a2]amix=inputs=3:duration=longest,"
-            "tremolo=f=0.10:d=0.45,"
-            "volume=1.4[out]"
-        ),
-
-        "-map", "[out]",
-        "-t", str(duration),
-        "-ac", "1",
-        "-ar", "44100",
-        "-b:a", "128k",
+        filter_complex,
+        "-map",
+        "[out]",
+        "-t",
+        str(duration),
+        "-ac",
+        "1",
+        "-ar",
+        "44100",
+        "-b:a",
+        "128k",
         path,
     ]
 
@@ -154,49 +275,46 @@ async def ambience_segment(req: AmbienceSegmentRequest):
     }
 
 
-@app.post("/silence-segment")
-async def silence_segment(req: SilenceSegmentRequest):
-    duration = max(0.1, min(req.duration_sec, 60))
-    path = os.path.join(SEGMENT_DIR, req.filename)
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f", "lavfi",
-        "-i", "anullsrc=r=44100:cl=mono",
-        "-t", str(duration),
-        path,
-    ]
-
-    subprocess.run(cmd, check=True)
-
-    return {
-        "index": req.index,
-        "type": "silence",
-        "filename": req.filename,
-        "path": path,
-    }
-
-
 @app.post("/concat")
 async def concat(req: ConcatRequest):
+    if not req.files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
     list_path = os.path.join(SEGMENT_DIR, "concat_list.txt")
     output_path = os.path.join(SEGMENT_DIR, "episode.mp3")
+
+    missing = []
 
     with open(list_path, "w", encoding="utf-8") as f:
         for filename in req.files:
             safe_path = os.path.join(SEGMENT_DIR, filename)
+
+            if not os.path.exists(safe_path):
+                missing.append(filename)
+
             f.write(f"file '{safe_path}'\n")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing segment files: {', '.join(missing[:10])}",
+        )
 
     cmd = [
         "ffmpeg",
         "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", list_path,
-        "-ac", "1",
-        "-ar", "44100",
-        "-b:a", "128k",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list_path,
+        "-ac",
+        "1",
+        "-ar",
+        "44100",
+        "-b:a",
+        "128k",
         output_path,
     ]
 
