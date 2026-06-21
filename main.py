@@ -12,7 +12,12 @@ app = FastAPI()
 SEGMENT_DIR = "/tmp/radio_segments"
 os.makedirs(SEGMENT_DIR, exist_ok=True)
 
-
+class AmbienceSegmentRequest(BaseModel):
+    index: int
+    duration_sec: float = 10
+    filename: str
+    sound: str = "radio_static"
+    
 class TTSRequest(BaseModel):
     text: str
     voice: str = "ru-RU-DmitryNeural"
@@ -102,7 +107,33 @@ async def silence(req: SilenceRequest):
         filename="silence.mp3",
     )
 
+@app.post("/ambience-segment")
+async def ambience_segment(req: AmbienceSegmentRequest):
+    duration = max(0.1, min(req.duration_sec, 60))
+    path = os.path.join(SEGMENT_DIR, req.filename)
 
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "lavfi",
+        "-i", "anoisesrc=color=pink:amplitude=0.08",
+        "-t", str(duration),
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
+        path,
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    return {
+        "index": req.index,
+        "type": "ambience",
+        "filename": req.filename,
+        "path": path,
+        "sound": req.sound,
+    }
+    
 @app.post("/tts-segment")
 async def tts_segment(req: TTSSegmentRequest):
     path = os.path.join(SEGMENT_DIR, req.filename)
