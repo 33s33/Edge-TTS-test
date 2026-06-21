@@ -114,27 +114,12 @@ async def ambience_segment(req: AmbienceSegmentRequest):
 
     sound = (req.sound or "low_bed").lower()
 
-    if "storm" in sound or "wind" in sound:
-        source = (
-            "anoisesrc=color=brown:amplitude=0.22,"
-            "lowpass=f=900,"
-            "highpass=f=40,"
-            "tremolo=f=0.12:d=0.6"
-        )
-    elif "static" in sound or "radio" in sound:
-        source = (
-            "anoisesrc=color=white:amplitude=0.10,"
-            "highpass=f=700,"
-            "lowpass=f=4200,"
-            "tremolo=f=7:d=0.25"
-        )
+    if "static" in sound or "radio" in sound:
+        source = "anoisesrc=color=white:amplitude=0.06"
+    elif "storm" in sound or "wind" in sound or "rain" in sound:
+        source = "anoisesrc=color=brown:amplitude=0.12"
     else:
-        source = (
-            "sine=frequency=55:sample_rate=44100,"
-            "volume=0.08,"
-            "tremolo=f=0.08:d=0.5,"
-            "lowpass=f=600"
-        )
+        source = "sine=frequency=55:sample_rate=44100"
 
     cmd = [
         "ffmpeg",
@@ -142,6 +127,7 @@ async def ambience_segment(req: AmbienceSegmentRequest):
         "-f", "lavfi",
         "-i", source,
         "-t", str(duration),
+        "-af", "volume=0.12,lowpass=f=900,highpass=f=35",
         "-ac", "1",
         "-ar", "44100",
         "-b:a", "128k",
@@ -149,6 +135,14 @@ async def ambience_segment(req: AmbienceSegmentRequest):
     ]
 
     subprocess.run(cmd, check=True)
+
+    return {
+        "index": req.index,
+        "type": "ambience",
+        "filename": req.filename,
+        "path": path,
+        "sound": req.sound,
+    }
 
     return {
         "index": req.index,
