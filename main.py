@@ -112,22 +112,31 @@ async def ambience_segment(req: AmbienceSegmentRequest):
     duration = max(0.1, min(req.duration_sec, 60))
     path = os.path.join(SEGMENT_DIR, req.filename)
 
-    sound = (req.sound or "low_bed").lower()
-
-    if "static" in sound or "radio" in sound:
-        source = "anoisesrc=color=white:amplitude=0.06"
-    elif "storm" in sound or "wind" in sound or "rain" in sound:
-        source = "anoisesrc=color=brown:amplitude=0.12"
-    else:
-        source = "sine=frequency=55:sample_rate=44100"
-
     cmd = [
         "ffmpeg",
         "-y",
+
         "-f", "lavfi",
-        "-i", source,
+        "-i", "sine=frequency=55:sample_rate=44100",
+
+        "-f", "lavfi",
+        "-i", "sine=frequency=82:sample_rate=44100",
+
+        "-f", "lavfi",
+        "-i", "anoisesrc=color=brown:amplitude=0.18:sample_rate=44100",
+
+        "-filter_complex",
+        (
+            "[0:a]volume=0.18[a0];"
+            "[1:a]volume=0.10[a1];"
+            "[2:a]highpass=f=45,lowpass=f=1600,volume=0.45[a2];"
+            "[a0][a1][a2]amix=inputs=3:duration=longest,"
+            "tremolo=f=0.10:d=0.45,"
+            "volume=1.4[out]"
+        ),
+
+        "-map", "[out]",
         "-t", str(duration),
-        "-af", "volume=0.12,lowpass=f=900,highpass=f=35",
         "-ac", "1",
         "-ar", "44100",
         "-b:a", "128k",
@@ -142,34 +151,6 @@ async def ambience_segment(req: AmbienceSegmentRequest):
         "filename": req.filename,
         "path": path,
         "sound": req.sound,
-    }
-
-    return {
-        "index": req.index,
-        "type": "ambience",
-        "filename": req.filename,
-        "path": path,
-        "sound": req.sound,
-    }
-    
-@app.post("/tts-segment")
-async def tts_segment(req: TTSSegmentRequest):
-    path = os.path.join(SEGMENT_DIR, req.filename)
-
-    communicate = edge_tts.Communicate(
-        req.text,
-        req.voice,
-        rate=req.rate,
-        pitch=req.pitch,
-    )
-
-    await communicate.save(path)
-
-    return {
-        "index": req.index,
-        "type": "speech",
-        "filename": req.filename,
-        "path": path,
     }
 
 
