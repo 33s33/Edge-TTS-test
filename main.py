@@ -1,60 +1,17 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import edge_tts
 import tempfile
 import os
 import subprocess
-from typing import List
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-import subprocess
 import uuid
-import os
-
-app = FastAPI()
-
-class BedRequest(BaseModel):
-    file: str = "concrete_bunker_10m.mp3"
-    start: float = 0
-    duration: float = 5
-    volume: float = 1.0
-    name: str | None = None
-
-@app.post("/bed")
-def make_bed(req: BedRequest):
-    input_path = os.path.join("assets", req.file)
-
-    if not os.path.exists(input_path):
-        return {"error": f"File not found: {input_path}"}
-
-    output_name = req.name or f"bed_{uuid.uuid4().hex}.mp3"
-    output_path = f"/tmp/{output_name}"
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss", str(req.start),
-        "-i", input_path,
-        "-t", str(req.duration),
-        "-filter:a", f"volume={req.volume}",
-        "-c:a", "libmp3lame",
-        "-q:a", "2",
-        output_path
-    ]
-
-    subprocess.run(cmd, check=True)
-
-    return FileResponse(
-        output_path,
-        media_type="audio/mpeg",
-        filename=output_name
-    )
+from typing import List, Optional
 
 app = FastAPI()
 
 SEGMENT_DIR = "/tmp/radio_segments"
+ASSETS_DIR = "assets"
 os.makedirs(SEGMENT_DIR, exist_ok=True)
 
 
@@ -91,6 +48,14 @@ class AmbienceSegmentRequest(BaseModel):
     sound: str = "low_bed"
 
 
+class BedRequest(BaseModel):
+    file: str = "concrete_bunker_10m.mp3"
+    start: float = 0
+    duration: float = 5
+    volume: float = 1.0
+    name: Optional[str] = None
+
+
 class ConcatRequest(BaseModel):
     files: List[str]
 
@@ -111,6 +76,7 @@ def routes():
             "/tts-segment",
             "/silence-segment",
             "/ambience-segment",
+            "/bed",
             "/concat",
             "/segment/{filename}",
         ]
@@ -124,11 +90,7 @@ async def get_segment(filename: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Segment not found: {filename}")
 
-    return FileResponse(
-        path,
-        media_type="audio/mpeg",
-        filename=filename,
-    )
+    return FileResponse(path, media_type="audio/mpeg", filename=filename)
 
 
 @app.post("/tts")
@@ -148,11 +110,7 @@ async def tts(req: TTSRequest):
 
     await communicate.save(tmp.name)
 
-    return FileResponse(
-        tmp.name,
-        media_type="audio/mpeg",
-        filename="speech.mp3",
-    )
+    return FileResponse(tmp.name, media_type="audio/mpeg", filename="speech.mp3")
 
 
 @app.post("/silence")
@@ -163,30 +121,19 @@ async def silence(req: SilenceRequest):
     tmp.close()
 
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=44100:cl=mono",
-        "-t",
-        str(duration),
-        "-ac",
-        "1",
-        "-ar",
-        "44100",
-        "-b:a",
-        "128k",
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", "anullsrc=r=44100:cl=mono",
+        "-t", str(duration),
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
         tmp.name,
     ]
 
     subprocess.run(cmd, check=True)
 
-    return FileResponse(
-        tmp.name,
-        media_type="audio/mpeg",
-        filename="silence.mp3",
-    )
+    return FileResponse(tmp.name, media_type="audio/mpeg", filename="silence.mp3")
 
 
 @app.post("/tts-segment")
@@ -219,20 +166,13 @@ async def silence_segment(req: SilenceSegmentRequest):
     path = os.path.join(SEGMENT_DIR, req.filename)
 
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=44100:cl=mono",
-        "-t",
-        str(duration),
-        "-ac",
-        "1",
-        "-ar",
-        "44100",
-        "-b:a",
-        "128k",
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", "anullsrc=r=44100:cl=mono",
+        "-t", str(duration),
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
         path,
     ]
 
@@ -246,6 +186,37 @@ async def silence_segment(req: SilenceSegmentRequest):
     }
 
 
+@app.post("/bed")
+async def make_bed(req: BedRequest):
+    input_path = os.path.join(ASSETS_DIR, req.file)
+
+    if not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {input_path}")
+
+    duration = max(0.1, min(req.duration, 60))
+    start = max(0, req.start)
+    volume = max(0.0, min(req.volume, 2.0))
+
+    output_name = req.name or f"bed_{uuid.uuid4().hex}.mp3"
+    output_path = os.path.join(SEGMENT_DIR, output_name)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start),
+        "-i", input_path,
+        "-t", str(duration),
+        "-filter:a", f"volume={volume}",
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
+        output_path,
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    return FileResponse(output_path, media_type="audio/mpeg", filename=output_name)
+
+
 @app.post("/ambience-segment")
 async def ambience_segment(req: AmbienceSegmentRequest):
     duration = max(0.1, min(req.duration_sec, 60))
@@ -253,23 +224,45 @@ async def ambience_segment(req: AmbienceSegmentRequest):
 
     sound = (req.sound or "low_bed").lower()
 
-    if "static" in sound or "radio" in sound:
-        sources = [
-            ("anoisesrc=color=white:amplitude=0.16:sample_rate=44100", "volume=0.35,highpass=f=800,lowpass=f=4200"),
-            ("anoisesrc=color=pink:amplitude=0.08:sample_rate=44100", "volume=0.20,highpass=f=200,lowpass=f=2500"),
-        ]
-    elif "storm" in sound or "wind" in sound or "rain" in sound or "ocean" in sound:
-        sources = [
-            ("anoisesrc=color=brown:amplitude=0.22:sample_rate=44100", "volume=0.55,highpass=f=40,lowpass=f=1200"),
-            ("anoisesrc=color=pink:amplitude=0.10:sample_rate=44100", "volume=0.30,highpass=f=300,lowpass=f=3000"),
-            ("sine=frequency=63:sample_rate=44100", "volume=0.12"),
-        ]
+    if sound in ["concrete_bunker", "bunker", "bed_bunker"]:
+        input_path = os.path.join(ASSETS_DIR, "concrete_bunker_10m.mp3")
+    elif sound in ["research_facility", "facility", "bed_facility"]:
+        input_path = os.path.join(ASSETS_DIR, "research_facility_10m.mp3")
     else:
-        sources = [
-            ("sine=frequency=55:sample_rate=44100", "volume=0.22"),
-            ("sine=frequency=82:sample_rate=44100", "volume=0.14"),
-            ("anoisesrc=color=brown:amplitude=0.18:sample_rate=44100", "volume=0.45,highpass=f=45,lowpass=f=1600"),
+        input_path = None
+
+    if input_path and os.path.exists(input_path):
+        start = (req.index * 13) % 540
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start),
+            "-i", input_path,
+            "-t", str(duration),
+            "-filter:a", "volume=0.55",
+            "-ac", "1",
+            "-ar", "44100",
+            "-b:a", "128k",
+            path,
         ]
+
+        subprocess.run(cmd, check=True)
+
+        return {
+            "index": req.index,
+            "type": "ambience",
+            "filename": req.filename,
+            "path": path,
+            "sound": req.sound,
+            "source": input_path,
+            "start": start,
+        }
+
+    sources = [
+        ("sine=frequency=55:sample_rate=44100", "volume=0.22"),
+        ("sine=frequency=82:sample_rate=44100", "volume=0.14"),
+        ("anoisesrc=color=brown:amplitude=0.18:sample_rate=44100", "volume=0.45,highpass=f=45,lowpass=f=1600"),
+    ]
 
     cmd = ["ffmpeg", "-y"]
 
@@ -294,18 +287,12 @@ async def ambience_segment(req: AmbienceSegmentRequest):
     )
 
     cmd += [
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[out]",
-        "-t",
-        str(duration),
-        "-ac",
-        "1",
-        "-ar",
-        "44100",
-        "-b:a",
-        "128k",
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-t", str(duration),
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
         path,
     ]
 
@@ -317,6 +304,7 @@ async def ambience_segment(req: AmbienceSegmentRequest):
         "filename": req.filename,
         "path": path,
         "sound": req.sound,
+        "source": "generated",
     }
 
 
@@ -346,27 +334,16 @@ async def concat(req: ConcatRequest):
         )
 
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        list_path,
-        "-ac",
-        "1",
-        "-ar",
-        "44100",
-        "-b:a",
-        "128k",
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_path,
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
         output_path,
     ]
 
     subprocess.run(cmd, check=True)
 
-    return FileResponse(
-        output_path,
-        media_type="audio/mpeg",
-        filename="episode.mp3",
-    )
+    return FileResponse(output_path, media_type="audio/mpeg", filename="episode.mp3")
