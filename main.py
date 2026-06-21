@@ -112,11 +112,35 @@ async def ambience_segment(req: AmbienceSegmentRequest):
     duration = max(0.1, min(req.duration_sec, 60))
     path = os.path.join(SEGMENT_DIR, req.filename)
 
+    sound = (req.sound or "low_bed").lower()
+
+    if "storm" in sound or "wind" in sound:
+        source = (
+            "anoisesrc=color=brown:amplitude=0.22,"
+            "lowpass=f=900,"
+            "highpass=f=40,"
+            "tremolo=f=0.12:d=0.6"
+        )
+    elif "static" in sound or "radio" in sound:
+        source = (
+            "anoisesrc=color=white:amplitude=0.10,"
+            "highpass=f=700,"
+            "lowpass=f=4200,"
+            "tremolo=f=7:d=0.25"
+        )
+    else:
+        source = (
+            "sine=frequency=55:sample_rate=44100,"
+            "volume=0.08,"
+            "tremolo=f=0.08:d=0.5,"
+            "lowpass=f=600"
+        )
+
     cmd = [
         "ffmpeg",
         "-y",
         "-f", "lavfi",
-        "-i", "anoisesrc=color=pink:amplitude=0.08",
+        "-i", source,
         "-t", str(duration),
         "-ac", "1",
         "-ar", "44100",
