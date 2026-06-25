@@ -56,6 +56,14 @@ class BedRequest(BaseModel):
     name: Optional[str] = None
 
 
+class MixEpisodeRequest(BaseModel):
+    episode_file: str = "episode.mp3"
+    bed_file: str = "concrete_bunker_10m.mp3"
+    voice_volume: float = 1.0
+    bed_volume: float = 1.0
+    output_file: str = "episode_final.mp3"
+
+
 class ConcatRequest(BaseModel):
     files: List[str]
 
@@ -77,6 +85,7 @@ def routes():
             "/silence-segment",
             "/ambience-segment",
             "/bed",
+            "/mix-episode",
             "/concat",
             "/segment/{filename}",
         ]
@@ -215,6 +224,48 @@ async def make_bed(req: BedRequest):
     subprocess.run(cmd, check=True)
 
     return FileResponse(output_path, media_type="audio/mpeg", filename=output_name)
+
+
+@app.post("/mix-episode")
+async def mix_episode(req: MixEpisodeRequest):
+    episode_path = os.path.join(SEGMENT_DIR, req.episode_file)
+    bed_path = os.path.join(ASSETS_DIR, req.bed_file)
+    output_path = os.path.join(SEGMENT_DIR, req.output_file)
+
+    if not os.path.exists(episode_path):
+        raise HTTPException(status_code=404, detail=f"Episode not found: {episode_path}")
+
+    if not os.path.exists(bed_path):
+        raise HTTPException(status_code=404, detail=f"Bed not found: {bed_path}")
+
+    voice_volume = max(0.0, min(req.voice_volume, 3.0))
+    bed_volume = max(0.0, min(req.bed_volume, 3.0))
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", episode_path,
+        "-stream_loop", "-1",
+        "-i", bed_path,
+        "-filter_complex",
+        (
+            f"[0:a]volume={voice_volume}[voice];"
+            f"[1:a]volume={bed_volume}[bed];"
+            "[voice][bed]amix=inputs=2:duration=first:dropout_transition=0[out]"
+        ),
+        "-map", "[out]",
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
+        output_path,
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    return FileResponse(
+        output_path,
+        media_type="audio/mpeg",
+        filename=req.output_file,
+    )
 
 
 @app.post("/ambience-segment")
