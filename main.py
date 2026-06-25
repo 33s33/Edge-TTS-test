@@ -64,6 +64,13 @@ class MixEpisodeRequest(BaseModel):
     output_file: str = "episode_final.mp3"
 
 
+class RadioWrapRequest(BaseModel):
+    filename: str
+    open_file: str = "radio_open.mp3"
+    close_file: str = "radio_close.mp3"
+    overwrite: bool = True
+
+
 class ConcatRequest(BaseModel):
     files: List[str]
 
@@ -86,6 +93,7 @@ def routes():
             "/ambience-segment",
             "/bed",
             "/mix-episode",
+            "/radio-wrap-segment",
             "/concat",
             "/segment/{filename}",
         ]
@@ -266,6 +274,66 @@ async def mix_episode(req: MixEpisodeRequest):
         media_type="audio/mpeg",
         filename=req.output_file,
     )
+
+
+@app.post("/radio-wrap-segment")
+async def radio_wrap_segment(req: RadioWrapRequest):
+    speech_path = os.path.join(SEGMENT_DIR, req.filename)
+
+    if not os.path.exists(speech_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Speech file not found: {req.filename}"
+        )
+
+    open_path = os.path.join(ASSETS_DIR, req.open_file)
+    close_path = os.path.join(ASSETS_DIR, req.close_file)
+
+    if not os.path.exists(open_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Open sound not found: {req.open_file}"
+        )
+
+    if not os.path.exists(close_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Close sound not found: {req.close_file}"
+        )
+
+    output_path = speech_path
+
+    if not req.overwrite:
+        root, ext = os.path.splitext(speech_path)
+        output_path = f"{root}_radio{ext}"
+
+    temp_output = output_path + ".tmp.mp3"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", open_path,
+        "-i", speech_path,
+        "-i", close_path,
+        "-filter_complex",
+        "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+        "-map", "[out]",
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
+        temp_output,
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    os.replace(temp_output, output_path)
+
+    return {
+        "filename": os.path.basename(output_path),
+        "wrapped": True,
+        "open_file": req.open_file,
+        "close_file": req.close_file,
+        "overwrite": req.overwrite,
+    }
 
 
 @app.post("/ambience-segment")
