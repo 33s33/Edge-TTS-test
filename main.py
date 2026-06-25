@@ -69,6 +69,7 @@ class RadioWrapRequest(BaseModel):
     open_file: str = "radio_open.mp3"
     close_file: str = "radio_close.mp3"
     overwrite: bool = True
+    tail_silence_sec: float = 0.8
 
 
 class ConcatRequest(BaseModel):
@@ -308,14 +309,18 @@ async def radio_wrap_segment(req: RadioWrapRequest):
         output_path = f"{root}_radio{ext}"
 
     temp_output = output_path + ".tmp.mp3"
+    tail_silence = max(0.0, min(req.tail_silence_sec, 5.0))
 
     cmd = [
         "ffmpeg", "-y",
         "-i", open_path,
         "-i", speech_path,
         "-i", close_path,
+        "-f", "lavfi",
+        "-t", str(tail_silence),
+        "-i", "anullsrc=r=44100:cl=mono",
         "-filter_complex",
-        "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+        "[0:a][1:a][2:a][3:a]concat=n=4:v=0:a=1[out]",
         "-map", "[out]",
         "-ac", "1",
         "-ar", "44100",
